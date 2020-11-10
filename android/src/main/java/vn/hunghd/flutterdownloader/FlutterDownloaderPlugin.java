@@ -18,15 +18,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
-
-import androidx.work.BackoffPolicy;
-import androidx.work.Constraints;
-import androidx.work.Data;
-import androidx.work.NetworkType;
-import androidx.work.OneTimeWorkRequest;
-import androidx.work.WorkManager;
-import androidx.work.WorkRequest;
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin;
 import io.flutter.plugin.common.BinaryMessenger;
@@ -37,7 +28,6 @@ import io.flutter.plugin.common.PluginRegistry;
 
 public class FlutterDownloaderPlugin implements MethodCallHandler, FlutterPlugin {
     private static final String CHANNEL = "vn.hunghd/downloader";
-    private static final String TAG = "flutter_download_task";
 
     public static final String SHARED_PREFERENCES_KEY = "vn.hunghd.downloader.pref";
     public static final String CALLBACK_DISPATCHER_HANDLE_KEY = "callback_dispatcher_handle_key";
@@ -117,28 +107,20 @@ public class FlutterDownloaderPlugin implements MethodCallHandler, FlutterPlugin
         }
     }
 
-    private WorkRequest buildRequest(String url, String savedDir, String filename, String headers, boolean showNotification, boolean openFileFromNotification, boolean isResume, boolean requiresStorageNotLow) {
-        WorkRequest request = new OneTimeWorkRequest.Builder(DownloadWorker.class)
-                .setConstraints(new Constraints.Builder()
-                        .setRequiresStorageNotLow(requiresStorageNotLow)
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build())
-                .addTag(TAG)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 5, TimeUnit.SECONDS)
-                .setInputData(new Data.Builder()
-                        .putString(DownloadWorker.ARG_URL, url)
-                        .putString(DownloadWorker.ARG_SAVED_DIR, savedDir)
-                        .putString(DownloadWorker.ARG_FILE_NAME, filename)
-                        .putString(DownloadWorker.ARG_HEADERS, headers)
-                        .putBoolean(DownloadWorker.ARG_SHOW_NOTIFICATION, showNotification)
-                        .putBoolean(DownloadWorker.ARG_OPEN_FILE_FROM_NOTIFICATION, openFileFromNotification)
-                        .putBoolean(DownloadWorker.ARG_IS_RESUME, isResume)
-                        .putLong(DownloadWorker.ARG_CALLBACK_HANDLE, callbackHandle)
-                        .putBoolean(DownloadWorker.ARG_DEBUG, debugMode == 1)
-                        .build()
-                )
-                .build();
-        return request;
+    private DownloadWorker buildRequest(String url, String savedDir, String filename, String headers,
+                                        boolean showNotification, boolean openFileFromNotification,
+                                        boolean isResume, boolean requiresStorageNotLow) {
+        return new DownloadWorker(context, new DownloadWorker.WorkerParameters(
+                url,
+                savedDir,
+                filename,
+                headers,
+                showNotification,
+                openFileFromNotification,
+                isResume,
+                requiresStorageNotLow,
+                callbackHandle
+        ), debugMode == 1);
     }
 
     private void sendUpdateProgress(String id, int status, int progress) {
@@ -174,8 +156,8 @@ public class FlutterDownloaderPlugin implements MethodCallHandler, FlutterPlugin
         boolean showNotification = call.argument("show_notification");
         boolean openFileFromNotification = call.argument("open_file_from_notification");
         boolean requiresStorageNotLow = call.argument("requires_storage_not_low");
-        WorkRequest request = buildRequest(url, savedDir, filename, headers, showNotification, openFileFromNotification, false, requiresStorageNotLow);
-        WorkManager.getInstance(context).enqueue(request);
+        DownloadWorker request = buildRequest(url, savedDir, filename, headers, showNotification, openFileFromNotification, false, requiresStorageNotLow);
+        WorkManager.getInstance().enqueue(request);
         String taskId = request.getId().toString();
         result.success(taskId);
         sendUpdateProgress(taskId, DownloadStatus.ENQUEUED, 0);
@@ -219,19 +201,19 @@ public class FlutterDownloaderPlugin implements MethodCallHandler, FlutterPlugin
 
     private void cancel(MethodCall call, MethodChannel.Result result) {
         String taskId = call.argument("task_id");
-        WorkManager.getInstance(context).cancelWorkById(UUID.fromString(taskId));
+        WorkManager.getInstance().cancelWorkById(UUID.fromString(taskId));
         result.success(null);
     }
 
     private void cancelAll(MethodCall call, MethodChannel.Result result) {
-        WorkManager.getInstance(context).cancelAllWorkByTag(TAG);
+        WorkManager.getInstance().cancelAllWorkByTag();
         result.success(null);
     }
 
     private void pause(MethodCall call, MethodChannel.Result result) {
         String taskId = call.argument("task_id");
         taskDao.updateTask(taskId, true);
-        WorkManager.getInstance(context).cancelWorkById(UUID.fromString(taskId));
+        WorkManager.getInstance().cancelWorkById(UUID.fromString(taskId));
         result.success(null);
     }
 
@@ -248,12 +230,12 @@ public class FlutterDownloaderPlugin implements MethodCallHandler, FlutterPlugin
                 String partialFilePath = task.savedDir + File.separator + filename;
                 File partialFile = new File(partialFilePath);
                 if (partialFile.exists()) {
-                    WorkRequest request = buildRequest(task.url, task.savedDir, task.filename, task.headers, task.showNotification, task.openFileFromNotification, true, requiresStorageNotLow);
+                    DownloadWorker request = buildRequest(task.url, task.savedDir, task.filename, task.headers, task.showNotification, task.openFileFromNotification, true, requiresStorageNotLow);
                     String newTaskId = request.getId().toString();
                     result.success(newTaskId);
                     sendUpdateProgress(newTaskId, DownloadStatus.RUNNING, task.progress);
                     taskDao.updateTask(taskId, newTaskId, DownloadStatus.RUNNING, task.progress, false);
-                    WorkManager.getInstance(context).enqueue(request);
+                    WorkManager.getInstance().enqueue(request);
                 } else {
                     taskDao.updateTask(taskId, false);
                     result.error("invalid_data", "not found partial downloaded data, this task cannot be resumed", null);
@@ -272,12 +254,12 @@ public class FlutterDownloaderPlugin implements MethodCallHandler, FlutterPlugin
         boolean requiresStorageNotLow = call.argument("requires_storage_not_low");
         if (task != null) {
             if (task.status == DownloadStatus.FAILED || task.status == DownloadStatus.CANCELED) {
-                WorkRequest request = buildRequest(task.url, task.savedDir, task.filename, task.headers, task.showNotification, task.openFileFromNotification, false, requiresStorageNotLow);
+                DownloadWorker request = buildRequest(task.url, task.savedDir, task.filename, task.headers, task.showNotification, task.openFileFromNotification, false, requiresStorageNotLow);
                 String newTaskId = request.getId().toString();
                 result.success(newTaskId);
                 sendUpdateProgress(newTaskId, DownloadStatus.ENQUEUED, task.progress);
                 taskDao.updateTask(taskId, newTaskId, DownloadStatus.ENQUEUED, task.progress, false);
-                WorkManager.getInstance(context).enqueue(request);
+                WorkManager.getInstance().enqueue(request);
             } else {
                 result.error("invalid_status", "only failed and canceled task can be retried", null);
             }
@@ -295,7 +277,7 @@ public class FlutterDownloaderPlugin implements MethodCallHandler, FlutterPlugin
                 String savedDir = task.savedDir;
                 String filename = task.filename;
                 if (filename == null) {
-                    filename = fileURL.substring(fileURL.lastIndexOf("/") + 1, fileURL.length());
+                    filename = fileURL.substring(fileURL.lastIndexOf("/") + 1);
                 }
                 String saveFilePath = savedDir + File.separator + filename;
                 Intent intent = IntentUtils.validatedFileIntent(context, saveFilePath, task.mimeType);
@@ -319,12 +301,12 @@ public class FlutterDownloaderPlugin implements MethodCallHandler, FlutterPlugin
         DownloadTask task = taskDao.loadTask(taskId);
         if (task != null) {
             if (task.status == DownloadStatus.ENQUEUED || task.status == DownloadStatus.RUNNING) {
-                WorkManager.getInstance(context).cancelWorkById(UUID.fromString(taskId));
+                WorkManager.getInstance().cancelWorkById(UUID.fromString(taskId));
             }
             if (shouldDeleteContent) {
                 String filename = task.filename;
                 if (filename == null) {
-                    filename = task.url.substring(task.url.lastIndexOf("/") + 1, task.url.length());
+                    filename = task.url.substring(task.url.lastIndexOf("/") + 1);
                 }
 
                 String saveFilePath = task.savedDir + File.separator + filename;

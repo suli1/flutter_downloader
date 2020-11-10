@@ -11,19 +11,17 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
-import android.graphics.BitmapFactory;
 import android.os.Build;
-
-import androidx.annotation.NonNull;
-import androidx.core.app.NotificationCompat;
-import androidx.core.app.NotificationManagerCompat;
-import androidx.core.content.ContextCompat;
-
 import android.os.Environment;
 import android.os.Handler;
 import android.provider.MediaStore;
 import android.text.TextUtils;
 import android.util.Log;
+
+import androidx.annotation.NonNull;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -45,9 +43,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import androidx.work.Worker;
-import androidx.work.WorkerParameters;
-
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.PluginRegistry;
@@ -58,16 +53,6 @@ import io.flutter.view.FlutterNativeView;
 import io.flutter.view.FlutterRunArguments;
 
 public class DownloadWorker extends Worker implements MethodChannel.MethodCallHandler {
-    public static final String ARG_URL = "url";
-    public static final String ARG_FILE_NAME = "file_name";
-    public static final String ARG_SAVED_DIR = "saved_file";
-    public static final String ARG_HEADERS = "headers";
-    public static final String ARG_IS_RESUME = "is_resume";
-    public static final String ARG_SHOW_NOTIFICATION = "show_notification";
-    public static final String ARG_OPEN_FILE_FROM_NOTIFICATION = "open_file_from_notification";
-    public static final String ARG_CALLBACK_HANDLE = "callback_handle";
-    public static final String ARG_DEBUG = "debug";
-
     private static final String TAG = DownloadWorker.class.getSimpleName();
     private static final int BUFFER_SIZE = 4096;
     private static final String CHANNEL_ID = "FLUTTER_DOWNLOADER_NOTIFICATION";
@@ -81,20 +66,23 @@ public class DownloadWorker extends Worker implements MethodChannel.MethodCallHa
     private final Pattern filenameStarPattern = Pattern.compile("(?i)\\bfilename\\*=([^']+)'([^']*)'\"?([^\"]+)\"?");
     private final Pattern filenamePattern = Pattern.compile("(?i)\\bfilename=\"?([^\"]+)\"?");
 
+    private final WorkerParameters params;
+    private final boolean debug;
+
     private MethodChannel backgroundChannel;
-    private TaskDbHelper dbHelper;
     private TaskDao taskDao;
     private boolean showNotification;
     private boolean clickToOpenDownloadedFile;
-    private boolean debug;
     private int lastProgress = 0;
     private int primaryId;
     private String msgStarted, msgInProgress, msgCanceled, msgFailed, msgPaused, msgComplete;
     private long lastCallUpdateNotification = 0;
 
     public DownloadWorker(@NonNull final Context context,
-                          @NonNull WorkerParameters params) {
-        super(context, params);
+                          @NonNull WorkerParameters params, boolean debug) {
+        super(context);
+        this.params = params;
+        this.debug = debug;
 
         new Handler(context.getMainLooper()).post(new Runnable() {
             @Override
@@ -114,10 +102,10 @@ public class DownloadWorker extends Worker implements MethodChannel.MethodCallHa
                 FlutterMain.ensureInitializationComplete(context, null);
 
                 FlutterCallbackInformation callbackInfo = FlutterCallbackInformation.lookupCallbackInformation(callbackHandle);
-                if (callbackInfo == null) {
-                    Log.e(TAG, "Fatal: failed to find callback");
-                    return;
-                }
+//                if (callbackInfo == null) {
+//                    Log.e(TAG, "Fatal: failed to find callback");
+//                    return;
+//                }
 
                 backgroundFlutterView = new FlutterNativeView(getApplicationContext(), true);
 
@@ -142,7 +130,7 @@ public class DownloadWorker extends Worker implements MethodChannel.MethodCallHa
     }
 
     @Override
-    public void onMethodCall(MethodCall call, MethodChannel.Result result) {
+    public void onMethodCall(MethodCall call, @NonNull MethodChannel.Result result) {
         if (call.method.equals("didInitializeDispatcher")) {
             synchronized (isolateStarted) {
                 while (!isolateQueue.isEmpty()) {
@@ -156,19 +144,16 @@ public class DownloadWorker extends Worker implements MethodChannel.MethodCallHa
         }
     }
 
-    @NonNull
     @Override
-    public Result doWork() {
+    public void doWork() {
         Context context = getApplicationContext();
-        dbHelper = TaskDbHelper.getInstance(context);
-        taskDao = new TaskDao(dbHelper);
+        taskDao = new TaskDao(TaskDbHelper.getInstance(context));
 
-        String url = getInputData().getString(ARG_URL);
-        String filename = getInputData().getString(ARG_FILE_NAME);
-        String savedDir = getInputData().getString(ARG_SAVED_DIR);
-        String headers = getInputData().getString(ARG_HEADERS);
-        boolean isResume = getInputData().getBoolean(ARG_IS_RESUME, false);
-        debug = getInputData().getBoolean(ARG_DEBUG, false);
+        String url = params.url;
+        String filename = params.filename;
+        String savedDir = params.savedDir;
+        String headers = params.headers;
+        boolean isResume = params.isResume;
 
         Resources res = getApplicationContext().getResources();
         msgStarted = res.getString(R.string.flutter_downloader_notification_started);
@@ -180,8 +165,8 @@ public class DownloadWorker extends Worker implements MethodChannel.MethodCallHa
 
         log("DownloadWorker{url=" + url + ",filename=" + filename + ",savedDir=" + savedDir + ",header=" + headers + ",isResume=" + isResume);
 
-        showNotification = getInputData().getBoolean(ARG_SHOW_NOTIFICATION, false);
-        clickToOpenDownloadedFile = getInputData().getBoolean(ARG_OPEN_FILE_FROM_NOTIFICATION, false);
+        showNotification = params.showNotification;
+        clickToOpenDownloadedFile = params.openFileFromNotification;
 
         DownloadTask task = taskDao.loadTask(getId().toString());
         primaryId = task.primaryId;
@@ -202,16 +187,14 @@ public class DownloadWorker extends Worker implements MethodChannel.MethodCallHa
         try {
             downloadFile(context, url, savedDir, filename, headers, isResume);
             cleanUp();
-            dbHelper = null;
             taskDao = null;
-            return Result.success();
+            log("download success:" + url);
         } catch (Exception e) {
             updateNotification(context, filename == null ? url : filename, DownloadStatus.FAILED, -1, null, true);
             taskDao.updateTask(getId().toString(), DownloadStatus.FAILED, lastProgress);
             e.printStackTrace();
-            dbHelper = null;
             taskDao = null;
-            return Result.failure();
+            log("download failed:" + url);
         }
     }
 
@@ -277,7 +260,7 @@ public class DownloadWorker extends Worker implements MethodChannel.MethodCallHa
                 httpConn.setConnectTimeout(15000);
                 httpConn.setReadTimeout(15000);
                 httpConn.setInstanceFollowRedirects(false);   // Make the logic below easier to detect redirections
-                httpConn.setRequestProperty("User-Agent", "Mozilla/5.0...");
+//                httpConn.setRequestProperty("User-Agent", "Mozilla/5.0...");
 
                 // setup request headers if it is set
                 setupHeaders(httpConn, headers);
@@ -550,7 +533,7 @@ public class DownloadWorker extends Worker implements MethodChannel.MethodCallHa
 
     private void sendUpdateProcessEvent(int status, int progress) {
         final List<Object> args = new ArrayList<>();
-        long callbackHandle = getInputData().getLong(ARG_CALLBACK_HANDLE, 0);
+        long callbackHandle = params.callbackHandle;
         args.add(callbackHandle);
         args.add(getId().toString());
         args.add(status);
@@ -663,4 +646,31 @@ public class DownloadWorker extends Worker implements MethodChannel.MethodCallHa
             Log.d(TAG, message);
         }
     }
+
+    public static class WorkerParameters {
+        final String url;
+        final String savedDir;
+        final String filename;
+        final String headers;
+        final boolean showNotification;
+        final boolean openFileFromNotification;
+        final boolean isResume;
+        final boolean requiresStorageNotLow;
+        final long callbackHandle;
+
+        public WorkerParameters(String url, String savedDir, String filename, String headers,
+                                boolean showNotification, boolean openFileFromNotification,
+                                boolean isResume, boolean requiresStorageNotLow, long callbackHandle) {
+            this.url = url;
+            this.savedDir = savedDir;
+            this.filename = filename;
+            this.headers = headers;
+            this.showNotification = showNotification;
+            this.openFileFromNotification = openFileFromNotification;
+            this.isResume = isResume;
+            this.requiresStorageNotLow = requiresStorageNotLow;
+            this.callbackHandle = callbackHandle;
+        }
+    }
+
 }
