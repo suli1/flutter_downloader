@@ -11,13 +11,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 
-import java.util.concurrent.Executors;
-
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.work.Configuration;
-import androidx.work.WorkManager;
-import androidx.work.impl.WorkManagerInitializer;
 
 public class FlutterDownloaderInitializer extends ContentProvider {
     private final String TAG = "DownloaderInitializer";
@@ -25,10 +20,6 @@ public class FlutterDownloaderInitializer extends ContentProvider {
 
     @Override
     public boolean onCreate() {
-        int maximumConcurrentTask = getMaxConcurrentTaskMetadata(getContext());
-        WorkManager.initialize(getContext(), new Configuration.Builder()
-                .setExecutor(Executors.newFixedThreadPool(maximumConcurrentTask))
-                .build());
         return true;
     }
 
